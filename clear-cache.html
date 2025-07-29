@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clear Cache</title>
+</head>
+<body>
+    <h1>Cache Cleared!</h1>
+    <p>localStorage has been cleared. You can now close this tab and return to the app.</p>
+    <script>
+        // Clear all localStorage
+        localStorage.clear();
+        console.log('localStorage cleared successfully');
+        
+        // Redirect back to the app after 2 seconds
+        setTimeout(() => {
+            window.location.href = 'http://localhost:8080';
+        }, 2000);
+    </script>
+</body>
+</html> 
