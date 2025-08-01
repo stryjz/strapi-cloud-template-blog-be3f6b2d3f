@@ -1,0 +1,19 @@
+FROM postgres:15-alpine
+
+# Set environment variables for PostgreSQL
+ENV POSTGRES_DB=s3_commando
+ENV POSTGRES_USER=s3_commando_user
+ENV POSTGRES_PASSWORD=s3_commando_password
+
+# Copy initialization script
+COPY init-db.sql /docker-entrypoint-initdb.d/
+
+# Expose PostgreSQL port
+EXPOSE 5432
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD pg_isready -U s3_commando_user -d s3_commando || exit 1
+
+# Default command (inherited from postgres:15-alpine)
+CMD ["postgres"] 

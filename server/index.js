@@ -36,6 +36,15 @@ app.use(cors({
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
+// Request logging middleware (after body parsing)
+app.use((req, res, next) => {
+  console.log(`📡 ${req.method} ${req.path} - ${new Date().toISOString()}`);
+  if (req.path.startsWith('/auth/')) {
+    console.log(`🔐 Auth request body:`, req.body);
+  }
+  next();
+});
+
 // Authentication middleware
 const requireAuth = async (req, res, next) => {
   try {
@@ -162,7 +171,7 @@ app.post('/auth/sign-up', async (req, res) => {
       const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:8080'}/verify-email?token=${verificationToken}`;
       
       await resend.emails.send({
-        from: 'onboarding@resend.dev',
+        from: 'S3 Commando <noreply@itlabs-ai.com>',
         to: [email],
         subject: 'Verify your email address - S3 Commando',
         html: `
@@ -189,9 +198,11 @@ app.post('/auth/sign-up', async (req, res) => {
         `
       });
     } catch (emailError) {
-      console.error('Failed to send verification email:', emailError);
+      console.error('❌ Failed to send verification email:', emailError);
       // Don't fail the registration if email fails
     }
+    
+    console.log(`✅ Email sending attempt completed for: ${email}`);
 
     res.json({ 
       success: true,
@@ -208,6 +219,8 @@ app.post('/auth/sign-in', async (req, res) => {
   try {
     const { email, password } = req.body;
     
+    console.log(`🔐 Sign-in attempt for email: ${email}`);
+    
     // Get user and password
     const userResult = await pool.query(
       'SELECT u.*, p.hashed_password FROM users u JOIN passwords p ON u.id = p.user_id WHERE u.email = $1',
@@ -215,18 +228,24 @@ app.post('/auth/sign-in', async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
+      console.log(`❌ User not found: ${email}`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const user = userResult.rows[0];
+    console.log(`✅ User found: ${user.email}, role: ${user.role}, verified: ${user.email_verified}`);
+    
     const isValidPassword = await bcrypt.compare(password, user.hashed_password);
+    console.log(`🔑 Password validation: ${isValidPassword ? '✅ Valid' : '❌ Invalid'}`);
 
     if (!isValidPassword) {
+      console.log(`❌ Invalid password for user: ${email}`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check if email is verified
     if (!user.email_verified) {
+      console.log(`❌ Email not verified for user: ${email}`);
       return res.status(401).json({ error: 'Please verify your email address before signing in' });
     }
 
@@ -239,6 +258,8 @@ app.post('/auth/sign-in', async (req, res) => {
 
     // Remove hashed_password from response
     delete user.hashed_password;
+
+    console.log(`🎉 Successful login for user: ${email}, session created: ${sessionId}`);
 
     res.json({ 
       user, 
@@ -328,7 +349,7 @@ app.post('/auth/resend-verification', async (req, res) => {
       const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:8080'}/verify-email?token=${verificationToken}`;
       
       await resend.emails.send({
-        from: 'onboarding@resend.dev',
+        from: 'S3 Commando <noreply@itlabs-ai.com>',
         to: [email],
         subject: 'Verify your email address - S3 Commando',
         html: `
@@ -1169,7 +1190,7 @@ app.post('/api/admin/invite', requireAuth, async (req, res) => {
       const loginUrl = `${process.env.FRONTEND_URL || 'http://localhost:8080'}/auth`;
       
       await resend.emails.send({
-        from: 'onboarding@resend.dev',
+        from: 'S3 Commando <noreply@itlabs-ai.com>',
         to: [email],
         subject: `You've been invited to join ${req.user.name || 'our team'} - S3 Commando`,
         html: `
