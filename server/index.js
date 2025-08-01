@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { S3Client, ListBucketsCommand, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Resend } from 'resend';
 import Stripe from 'stripe';
+import logger from './logger.js';
 
 dotenv.config();
 
@@ -37,13 +38,7 @@ app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
 // Request logging middleware (after body parsing)
-app.use((req, res, next) => {
-  console.log(`📡 ${req.method} ${req.path} - ${new Date().toISOString()}`);
-  if (req.path.startsWith('/auth/')) {
-    console.log(`🔐 Auth request body:`, req.body);
-  }
-  next();
-});
+app.use(logger.logRequest.bind(logger));
 
 // Authentication middleware
 const requireAuth = async (req, res, next) => {
@@ -89,7 +84,7 @@ const requireAuth = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error('Auth middleware error:', error);
+    logger.error('Authentication middleware error', { error: error.message, stack: error.stack });
     res.status(401).json({ error: 'Unauthorized' });
   }
 };
@@ -198,11 +193,11 @@ app.post('/auth/sign-up', async (req, res) => {
         `
       });
     } catch (emailError) {
-      console.error('❌ Failed to send verification email:', emailError);
+      logger.error('Failed to send verification email', { email, error: emailError.message });
       // Don't fail the registration if email fails
     }
     
-    console.log(`✅ Email sending attempt completed for: ${email}`);
+    logger.info('User registration completed', { email, userId: userResult.rows[0].id, tenantId });
 
     res.json({ 
       success: true,
@@ -210,7 +205,7 @@ app.post('/auth/sign-up', async (req, res) => {
       user: { ...userResult.rows[0], email_verified: false }
     });
   } catch (error) {
-    console.error('Sign up error:', error);
+    logger.error('User sign up error', { error: error.message, stack: error.stack });
     res.status(400).json({ error: error.message });
   }
 });
@@ -219,7 +214,7 @@ app.post('/auth/sign-in', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    console.log(`🔐 Sign-in attempt for email: ${email}`);
+    logger.info('Sign-in attempt', { email });
     
     // Get user and password
     const userResult = await pool.query(
@@ -228,24 +223,24 @@ app.post('/auth/sign-in', async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
-      console.log(`❌ User not found: ${email}`);
+      logger.warn('Sign-in failed - user not found', { email });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const user = userResult.rows[0];
-    console.log(`✅ User found: ${user.email}, role: ${user.role}, verified: ${user.email_verified}`);
+    logger.debug('User found during sign-in', { email: user.email, role: user.role, verified: user.email_verified });
     
     const isValidPassword = await bcrypt.compare(password, user.hashed_password);
-    console.log(`🔑 Password validation: ${isValidPassword ? '✅ Valid' : '❌ Invalid'}`);
+    logger.debug('Password validation result', { email, isValid: isValidPassword });
 
     if (!isValidPassword) {
-      console.log(`❌ Invalid password for user: ${email}`);
+      logger.warn('Sign-in failed - invalid password', { email });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check if email is verified
     if (!user.email_verified) {
-      console.log(`❌ Email not verified for user: ${email}`);
+      logger.warn('Sign-in failed - email not verified', { email });
       return res.status(401).json({ error: 'Please verify your email address before signing in' });
     }
 
@@ -259,14 +254,14 @@ app.post('/auth/sign-in', async (req, res) => {
     // Remove hashed_password from response
     delete user.hashed_password;
 
-    console.log(`🎉 Successful login for user: ${email}, session created: ${sessionId}`);
+    logger.info('User successfully signed in', { email, userId: user.id, sessionId });
 
     res.json({ 
       user, 
       session: { id: sessionId, userId: user.id }
     });
   } catch (error) {
-    console.error('Sign in error:', error);
+    logger.error('Sign in error', { error: error.message, stack: error.stack });
     res.status(400).json({ error: error.message });
   }
 });
@@ -302,12 +297,14 @@ app.get('/auth/verify-email', async (req, res) => {
       [user.id]
     );
 
+    logger.info('Email verification successful', { userId: user.id, email: user.email });
+
     res.json({ 
       success: true,
       message: 'Email verified successfully! You can now sign in to your account.'
     });
   } catch (error) {
-    console.error('Email verification error:', error);
+    logger.error('Email verification error', { error: error.message, stack: error.stack });
     res.status(400).json({ error: error.message });
   }
 });
@@ -376,16 +373,18 @@ app.post('/auth/resend-verification', async (req, res) => {
         `
       });
 
+      logger.info('Verification email resent successfully', { email, userId: user.id });
+
       res.json({ 
         success: true,
         message: 'Verification email sent successfully!'
       });
     } catch (emailError) {
-      console.error('Failed to send verification email:', emailError);
+      logger.error('Failed to send verification email', { email, error: emailError.message });
       res.status(500).json({ error: 'Failed to send verification email' });
     }
   } catch (error) {
-    console.error('Resend verification error:', error);
+    logger.error('Resend verification error', { error: error.message, stack: error.stack });
     res.status(400).json({ error: error.message });
   }
 });
@@ -394,9 +393,10 @@ app.post('/auth/sign-out', requireAuth, async (req, res) => {
   try {
     const sessionId = req.headers.authorization?.replace('Bearer ', '');
     await pool.query('DELETE FROM sessions WHERE id = $1', [sessionId]);
+    logger.info('User signed out', { userId: req.user.id, sessionId });
     res.json({ success: true });
   } catch (error) {
-    console.error('Sign out error:', error);
+    logger.error('Sign out error', { error: error.message, stack: error.stack });
     res.status(400).json({ error: error.message });
   }
 });
@@ -425,7 +425,7 @@ app.get('/auth/session', async (req, res) => {
       session: { id: sessionId, userId: user.id }
     });
   } catch (error) {
-    console.error('Session check error:', error);
+    logger.error('Session check error', { error: error.message, stack: error.stack });
     res.status(400).json({ error: error.message });
   }
 });
@@ -447,9 +447,10 @@ app.post('/api/s3/config', requireAuth, async (req, res) => {
         updated_at = NOW()
     `, [req.user.id, bucketName, region, accessKeyId, secretAccessKey]);
     
+    logger.info('S3 configuration saved', { userId: req.user.id, tenantId: req.user.tenant_id });
     res.json({ success: true, message: 'S3 configuration saved successfully' });
   } catch (error) {
-    console.error('Save S3 config error:', error);
+    logger.error('Save S3 config error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to save S3 configuration' });
   }
 });
@@ -481,7 +482,7 @@ app.get('/api/s3/config', requireAuth, async (req, res) => {
       }
     }
   } catch (error) {
-    console.error('Get S3 config error:', error);
+    logger.error('Get S3 config error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to get S3 configuration' });
   }
 });
@@ -507,12 +508,14 @@ app.post('/api/s3/test', requireAuth, async (req, res) => {
     const bucketExists = response.Buckets?.some(bucket => bucket.Name === bucketName);
     
     if (bucketExists) {
+      logger.info('S3 connection test successful', { userId: req.user.id, bucketName, region });
       res.json({ success: true, message: 'Successfully connected to S3 bucket' });
     } else {
+      logger.warn('S3 connection test failed - bucket not found', { userId: req.user.id, bucketName, region });
       res.status(400).json({ error: 'Bucket not found or access denied' });
     }
   } catch (error) {
-    console.error('S3 test connection error:', error);
+    logger.error('S3 test connection error', { error: error.message, stack: error.stack, bucketName, region });
     res.status(500).json({ error: 'Failed to connect to S3. Please check your credentials.' });
   }
 });
@@ -624,6 +627,14 @@ app.post('/api/upload', requireAuth, async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6)
     `, [req.user.tenant_id, fileName, req.body.fileName, fileSize, req.body.contentType, req.user.id]);
     
+    logger.info('File uploaded successfully', { 
+      userId: req.user.id, 
+      tenantId: req.user.tenant_id,
+      fileName: req.body.fileName,
+      fileSize: fileSize,
+      s3Key: fileName
+    });
+
     res.json({ 
       success: true, 
       fileName: fileName,
@@ -631,7 +642,7 @@ app.post('/api/upload', requireAuth, async (req, res) => {
       url: `https://${s3Config.bucket_name}.s3.${s3Config.region}.amazonaws.com/${fileName}`
     });
   } catch (error) {
-    console.error('Upload error:', error);
+    logger.error('File upload error', { error: error.message, stack: error.stack, fileName: req.body.fileName });
     res.status(500).json({ error: 'Failed to upload file to S3' });
   }
 });
@@ -688,9 +699,10 @@ app.get('/api/files', requireAuth, async (req, res) => {
       url: `https://${s3Config.bucket_name}.s3.${s3Config.region}.amazonaws.com/${obj.Key}`
     })) || [];
     
+    logger.debug('Files listed successfully', { userId: req.user.id, fileCount: files.length });
     res.json({ files });
   } catch (error) {
-    console.error('List files error:', error);
+    logger.error('List files error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to list files' });
   }
 });
@@ -749,9 +761,10 @@ app.delete('/api/files/:key', requireAuth, async (req, res) => {
       WHERE tenant_id = $1 AND object_key = $2
     `, [req.user.tenant_id, decodeURIComponent(key)]);
     
+    logger.info('File deleted successfully', { userId: req.user.id, tenantId: req.user.tenant_id, fileKey: key });
     res.json({ success: true, message: 'File deleted successfully' });
   } catch (error) {
-    console.error('Delete file error:', error);
+    logger.error('Delete file error', { error: error.message, stack: error.stack, fileKey: key });
     res.status(500).json({ error: 'Failed to delete file' });
   }
 });
@@ -1289,10 +1302,14 @@ app.post('/payments/create-payment-intent', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    console.log(`💳 Creating payment intent for user: ${req.user.email} (${req.user.id})`);
-    console.log(`💳 Amount: $${amount}, Currency: ${currency || 'usd'}`);
-    console.log(`💳 Description: ${description}`);
-    console.log(`💳 Metadata:`, metadata);
+    logger.info('Creating payment intent', { 
+      userId: req.user.id, 
+      email: req.user.email,
+      amount: `$${amount}`, 
+      currency: currency || 'usd',
+      description,
+      metadata
+    });
 
     // Create payment intent with Stripe
     const paymentIntent = await stripe.paymentIntents.create({
@@ -1310,8 +1327,11 @@ app.post('/payments/create-payment-intent', requireAuth, async (req, res) => {
       },
     });
 
-    console.log(`✅ Payment intent created: ${paymentIntent.id}`);
-    console.log(`💳 Client secret: ${paymentIntent.client_secret?.substring(0, 20)}...`);
+    logger.info('Payment intent created successfully', { 
+      paymentIntentId: paymentIntent.id,
+      amount: paymentIntent.amount,
+      status: paymentIntent.status
+    });
 
     res.json({
       id: paymentIntent.id,
@@ -1321,7 +1341,7 @@ app.post('/payments/create-payment-intent', requireAuth, async (req, res) => {
       client_secret: paymentIntent.client_secret,
     });
   } catch (error) {
-    console.error('❌ Create payment intent error:', error);
+    logger.error('Create payment intent error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to create payment intent' });
   }
 });
@@ -1335,15 +1355,20 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Payment intent ID is required' });
     }
 
-    console.log(`💰 Processing payment confirmation for intent: ${paymentIntentId}`);
-    console.log(`👤 User: ${req.user.email} (${req.user.id})`);
-    console.log(`🏢 Tenant: ${req.user.tenant_id}`);
+    logger.info('Processing payment confirmation', { 
+      paymentIntentId,
+      userId: req.user.id,
+      email: req.user.email,
+      tenantId: req.user.tenant_id
+    });
 
     // Retrieve the payment intent
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    console.log(`💳 Payment intent status: ${paymentIntent.status}`);
-    console.log(`💳 Payment amount: $${(paymentIntent.amount / 100).toFixed(2)}`);
-    console.log(`💳 Payment metadata:`, paymentIntent.metadata);
+    logger.debug('Payment intent retrieved', { 
+      status: paymentIntent.status,
+      amount: `$${(paymentIntent.amount / 100).toFixed(2)}`,
+      metadata: paymentIntent.metadata
+    });
 
     if (paymentIntent.status === 'succeeded') {
       // Payment was successful, update tenant limits based on metadata
@@ -1353,7 +1378,12 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
       const additionalUsers = parseInt(metadata.additional_users) || 0;
       const storageGB = parseInt(metadata.storage_gb) || 0;
 
-      console.log(`📊 Payment details: ${additionalUsers} users, ${storageGB}GB storage, type: ${purchaseType}`);
+      logger.info('Payment details', { 
+        additionalUsers, 
+        storageGB, 
+        purchaseType,
+        tenantId 
+      });
 
       if (tenantId && (additionalUsers > 0 || storageGB > 0)) {
         // Get current tenant limits first
@@ -1373,9 +1403,15 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
           currentStorageGB = current.max_storage_gb || 10;
           currentFiles = current.max_files || 1000;
           isCurrentlyTrial = current.is_trial || false;
-          console.log(`📊 Current limits: ${currentUsers} users, ${currentStorageGB}GB storage, ${currentFiles} files, trial: ${isCurrentlyTrial}`);
+          logger.debug('Current tenant limits', { 
+            currentUsers, 
+            currentStorageGB, 
+            currentFiles, 
+            isCurrentlyTrial,
+            tenantId 
+          });
         } else {
-          console.log(`📊 No existing limits found for tenant ${tenantId}, using defaults`);
+          logger.debug('No existing limits found for tenant, using defaults', { tenantId });
         }
         
         // Store the purchase record
@@ -1400,7 +1436,11 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
         const newStorageGB = currentStorageGB + storageGB;
         const newFiles = Math.max(currentFiles, 1000); // At least 1000 files for paid users
         
-        console.log(`📊 New limits will be: ${newUsers} users (+${additionalUsers}), ${newStorageGB}GB storage (+${storageGB}), ${newFiles} files`);
+        logger.info('Calculating new tenant limits', { 
+          newUsers: `${newUsers} (+${additionalUsers})`, 
+          newStorageGB: `${newStorageGB}GB (+${storageGB})`, 
+          newFiles 
+        });
 
         // Update tenant limits and remove trial status
         const result = await pool.query(
@@ -1417,19 +1457,23 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
           [tenantId, newUsers, newStorageGB, newFiles, false]
         );
         
-        console.log(`✅ Tenant limits updated successfully`);
-        console.log(`📊 Final limits: ${result.rows[0]?.max_users} users, ${result.rows[0]?.max_storage_gb}GB storage, ${result.rows[0]?.max_files} files`);
+        logger.info('Tenant limits updated successfully', { 
+          finalUsers: result.rows[0]?.max_users, 
+          finalStorageGB: result.rows[0]?.max_storage_gb, 
+          finalFiles: result.rows[0]?.max_files,
+          tenantId 
+        });
 
         // Remove tenant from trial_tenants table since they've purchased licenses
         await pool.query(
           'DELETE FROM trial_tenants WHERE tenant_id = $1',
           [tenantId]
         );
-        console.log(`✅ Removed tenant ${tenantId} from trial_tenants table`);
+        logger.info('Removed tenant from trial_tenants table', { tenantId });
         
-        console.log(`🎉 Payment processing completed successfully for tenant ${tenantId}`);
+        logger.info('Payment processing completed successfully', { tenantId });
       } else {
-        console.log(`⚠️ No valid purchase data found in payment metadata`);
+        logger.warn('No valid purchase data found in payment metadata', { paymentIntentId });
       }
       
       res.json({
@@ -1447,13 +1491,14 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
         }
       });
     } else {
+      logger.warn('Payment not completed', { paymentIntentId, status: paymentIntent.status });
       res.status(400).json({ 
         error: 'Payment not completed',
         status: paymentIntent.status 
       });
     }
   } catch (error) {
-    console.error('Confirm payment error:', error);
+    logger.error('Confirm payment error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to confirm payment' });
   }
 });
@@ -1461,8 +1506,11 @@ app.post('/payments/confirm-payment', requireAuth, async (req, res) => {
 // Get payment history
 app.get('/payments/history', requireAuth, async (req, res) => {
   try {
-    console.log(`📊 Fetching payment history for user: ${req.user.email} (${req.user.id})`);
-    console.log(`🏢 Tenant: ${req.user.tenant_id}`);
+    logger.info('Fetching payment history', { 
+      userId: req.user.id, 
+      email: req.user.email,
+      tenantId: req.user.tenant_id 
+    });
 
     // Get payments for the current user/tenant
     const payments = await stripe.paymentIntents.list({
@@ -1472,7 +1520,7 @@ app.get('/payments/history', requireAuth, async (req, res) => {
       },
     });
 
-    console.log(`📊 Found ${payments.data.length} payment intents from Stripe`);
+    logger.debug('Payment intents retrieved from Stripe', { count: payments.data.length });
 
     const paymentHistory = payments.data.map(payment => ({
       id: payment.id,
@@ -1490,19 +1538,23 @@ app.get('/payments/history', requireAuth, async (req, res) => {
       [req.user.tenant_id]
     );
 
-    console.log(`📊 Found ${purchaseRecords.rows.length} purchase records from database`);
+    logger.debug('Purchase records retrieved from database', { count: purchaseRecords.rows.length });
+
+    const summary = {
+      totalStripePayments: paymentHistory.length,
+      totalDatabasePurchases: purchaseRecords.rows.length,
+      successfulPayments: paymentHistory.filter(p => p.status === 'succeeded').length
+    };
+
+    logger.info('Payment history retrieved successfully', summary);
 
     res.json({
       stripePayments: paymentHistory,
       databasePurchases: purchaseRecords.rows,
-      summary: {
-        totalStripePayments: paymentHistory.length,
-        totalDatabasePurchases: purchaseRecords.rows.length,
-        successfulPayments: paymentHistory.filter(p => p.status === 'succeeded').length
-      }
+      summary
     });
   } catch (error) {
-    console.error('❌ Get payment history error:', error);
+    logger.error('Get payment history error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to get payment history' });
   }
 });
@@ -1545,7 +1597,7 @@ app.get('/api/trial/status', requireAuth, async (req, res) => {
     const trialEndDate = new Date(trial.trial_end_date);
     const daysRemaining = trial.is_trial ? Math.max(0, Math.ceil((trialEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))) : null;
 
-    res.json({
+    const response = {
       isTrial: trial.is_trial,
       trialStartDate: trial.trial_start_date,
       trialEndDate: trial.trial_end_date,
@@ -1553,9 +1605,12 @@ app.get('/api/trial/status', requireAuth, async (req, res) => {
       maxUsers: trial.max_users,
       maxFiles: trial.max_files,
       maxStorageGB: trial.max_storage_gb
-    });
+    };
+
+    logger.debug('Trial status retrieved', { tenantId, ...response });
+    res.json(response);
   } catch (error) {
-    console.error('Get trial status error:', error);
+    logger.error('Get trial status error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to get trial status' });
   }
 });
@@ -1569,8 +1624,11 @@ app.get('/api/tenant/usage', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'No tenant ID found for user' });
     }
 
-    console.log(`📊 Fetching usage data for tenant: ${tenantId}`);
-    console.log(`👤 Requested by user: ${req.user.email} (${req.user.id})`);
+    logger.info('Fetching usage data for tenant', { 
+      tenantId,
+      requestedBy: req.user.email,
+      userId: req.user.id 
+    });
 
     // Get user count for this tenant
     const userCountResult = await pool.query(
@@ -1594,9 +1652,9 @@ app.get('/api/tenant/usage', requireAuth, async (req, res) => {
         totalStorageBytes = parseInt(fileStatsResult.rows[0].total_size);
       }
       
-      console.log(`📊 File stats for tenant ${tenantId}: ${fileCount} files, ${totalStorageBytes} bytes`);
+      logger.debug('File stats calculated', { tenantId, fileCount, totalStorageBytes });
     } catch (err) {
-      console.log('File stats calculation failed, using default values:', err.message);
+      logger.warn('File stats calculation failed, using default values', { error: err.message, tenantId });
     }
 
     // Get tenant limits from tenant_limits table
@@ -1622,12 +1680,20 @@ app.get('/api/tenant/usage', requireAuth, async (req, res) => {
         maxFiles = limitsResult.rows[0].max_files;
         isTrial = limitsResult.rows[0].is_trial;
         trialEndDate = limitsResult.rows[0].trial_end_date;
-        console.log(`📊 Tenant ${tenantId} (${tenantName}) limits: ${currentUsers}/${maxUsers} users, ${maxStorageGB}GB storage, ${maxFiles} files, trial: ${isTrial}`);
+        logger.debug('Tenant limits retrieved', { 
+          tenantId, 
+          tenantName, 
+          currentUsers, 
+          maxUsers, 
+          maxStorageGB, 
+          maxFiles, 
+          isTrial 
+        });
       } else {
-        console.log(`📊 Tenant ${tenantId} not found in limits table, using defaults`);
+        logger.debug('Tenant not found in limits table, using defaults', { tenantId });
       }
     } catch (err) {
-      console.log('Tenant limits table not available, using defaults');
+      logger.warn('Tenant limits table not available, using defaults', { error: err.message });
     }
     
     const currentStorageGB = totalStorageBytes / (1024 * 1024 * 1024); // Convert bytes to GB
@@ -1646,10 +1712,10 @@ app.get('/api/tenant/usage', requireAuth, async (req, res) => {
       status: isTrial ? 'trial' : 'active'
     };
 
-    console.log(`📊 Usage response for tenant ${tenantId}:`, response);
+    logger.info('Tenant usage data retrieved successfully', { tenantId, ...response });
     res.json(response);
   } catch (error) {
-    console.error('❌ Get tenant usage error:', error);
+    logger.error('Get tenant usage error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Failed to get tenant usage' });
   }
 });
@@ -1823,9 +1889,11 @@ app.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (r
 
 // Webhook event handlers
 async function handleSubscriptionCreated(subscription) {
-  console.log('🔄 Handling subscription created:', subscription.id);
-  console.log(`📊 Subscription status: ${subscription.status}`);
-  console.log(`📊 Subscription metadata:`, subscription.metadata);
+  logger.info('Handling subscription created', { 
+    subscriptionId: subscription.id,
+    status: subscription.status,
+    metadata: subscription.metadata 
+  });
   
   const metadata = subscription.metadata;
   const tenantId = metadata.tenant_id;
@@ -1835,17 +1903,24 @@ async function handleSubscriptionCreated(subscription) {
     const additionalUsers = parseInt(metadata.additional_users) || 0;
     const storageGB = parseInt(metadata.storage_gb) || 0;
     
-    console.log(`📊 Subscription details: ${additionalUsers} users, ${storageGB}GB storage for tenant ${tenantId}`);
+    logger.info('Subscription details', { 
+      additionalUsers, 
+      storageGB, 
+      tenantId 
+    });
     
     await updateTenantLimits(tenantId, additionalUsers, storageGB, false);
-    console.log(`✅ Updated tenant ${tenantId} limits for new subscription`);
+    logger.info('Updated tenant limits for new subscription', { tenantId });
   } else {
-    console.log(`⚠️ No tenant_id found in subscription metadata`);
+    logger.warn('No tenant_id found in subscription metadata', { subscriptionId: subscription.id });
   }
 }
 
 async function handleSubscriptionUpdated(subscription) {
-  console.log('🔄 Handling subscription updated:', subscription.id);
+  logger.info('Handling subscription updated', { 
+    subscriptionId: subscription.id,
+    status: subscription.status 
+  });
   
   const metadata = subscription.metadata;
   const tenantId = metadata.tenant_id;
@@ -1857,17 +1932,20 @@ async function handleSubscriptionUpdated(subscription) {
       const storageGB = parseInt(metadata.storage_gb) || 0;
       
       await updateTenantLimits(tenantId, additionalUsers, storageGB, false);
-      console.log(`✅ Updated tenant ${tenantId} limits for active subscription`);
+      logger.info('Updated tenant limits for active subscription', { tenantId });
     } else if (subscription.status === 'canceled' || subscription.status === 'unpaid') {
       // Subscription is canceled or unpaid, revert to trial limits
       await updateTenantLimits(tenantId, 5, 10, true);
-      console.log(`⚠️ Reverted tenant ${tenantId} to trial limits due to subscription status: ${subscription.status}`);
+      logger.warn('Reverted tenant to trial limits due to subscription status', { 
+        tenantId, 
+        status: subscription.status 
+      });
     }
   }
 }
 
 async function handleSubscriptionDeleted(subscription) {
-  console.log('🔄 Handling subscription deleted:', subscription.id);
+  logger.info('Handling subscription deleted', { subscriptionId: subscription.id });
   
   const metadata = subscription.metadata;
   const tenantId = metadata.tenant_id;
@@ -1875,35 +1953,41 @@ async function handleSubscriptionDeleted(subscription) {
   if (tenantId) {
     // Revert to trial limits when subscription is deleted
     await updateTenantLimits(tenantId, 5, 10, true);
-    console.log(`⚠️ Reverted tenant ${tenantId} to trial limits due to subscription deletion`);
+    logger.warn('Reverted tenant to trial limits due to subscription deletion', { tenantId });
   }
 }
 
 async function handleInvoicePaymentSucceeded(invoice) {
-  console.log('🔄 Handling invoice payment succeeded:', invoice.id);
-  console.log(`💳 Invoice amount: $${(invoice.amount_paid / 100).toFixed(2)}`);
-  console.log(`💳 Invoice status: ${invoice.status}`);
+  logger.info('Handling invoice payment succeeded', { 
+    invoiceId: invoice.id,
+    amount: `$${(invoice.amount_paid / 100).toFixed(2)}`,
+    status: invoice.status 
+  });
   
   if (invoice.subscription) {
-    console.log(`📊 Processing subscription invoice: ${invoice.subscription}`);
+    logger.debug('Processing subscription invoice', { subscriptionId: invoice.subscription });
     const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
     const metadata = subscription.metadata;
     const tenantId = metadata.tenant_id;
     
-    console.log(`📊 Subscription metadata:`, metadata);
+    logger.debug('Subscription metadata', metadata);
     
     if (tenantId) {
       // Payment succeeded, ensure tenant has proper limits
       const additionalUsers = parseInt(metadata.additional_users) || 0;
       const storageGB = parseInt(metadata.storage_gb) || 0;
       
-      console.log(`📊 Invoice payment details: ${additionalUsers} users, ${storageGB}GB storage for tenant ${tenantId}`);
+      logger.info('Invoice payment details', { 
+        additionalUsers, 
+        storageGB, 
+        tenantId 
+      });
       
       await updateTenantLimits(tenantId, additionalUsers, storageGB, false);
-      console.log(`✅ Updated tenant ${tenantId} limits after successful payment`);
+      logger.info('Updated tenant limits after successful payment', { tenantId });
       
       // Store the payment record
-      console.log(`💾 Storing subscription payment record...`);
+      logger.debug('Storing subscription payment record');
       await pool.query(
         `INSERT INTO purchases (id, tenant_id, user_id, payment_intent_id, purchase_type, quantity, amount, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
@@ -1917,17 +2001,17 @@ async function handleInvoicePaymentSucceeded(invoice) {
           invoice.amount_paid,
         ]
       );
-      console.log(`✅ Subscription payment record stored`);
+      logger.info('Subscription payment record stored', { tenantId });
     } else {
-      console.log(`⚠️ No tenant_id found in subscription metadata`);
+      logger.warn('No tenant_id found in subscription metadata', { subscriptionId: invoice.subscription });
     }
   } else {
-    console.log(`⚠️ Invoice has no associated subscription`);
+    logger.warn('Invoice has no associated subscription', { invoiceId: invoice.id });
   }
 }
 
 async function handleInvoicePaymentFailed(invoice) {
-  console.log('🔄 Handling invoice payment failed:', invoice.id);
+  logger.info('Handling invoice payment failed', { invoiceId: invoice.id });
   
   if (invoice.subscription) {
     const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
@@ -1937,7 +2021,7 @@ async function handleInvoicePaymentFailed(invoice) {
     if (tenantId) {
       // Payment failed, revert to trial limits
       await updateTenantLimits(tenantId, 5, 10, true);
-      console.log(`⚠️ Reverted tenant ${tenantId} to trial limits due to payment failure`);
+      logger.warn('Reverted tenant to trial limits due to payment failure', { tenantId });
     }
   }
 }
@@ -1945,7 +2029,12 @@ async function handleInvoicePaymentFailed(invoice) {
 // Helper function to update tenant limits
 async function updateTenantLimits(tenantId, additionalUsers, storageGB, isTrial) {
   try {
-    console.log(`🔄 Updating tenant limits for ${tenantId}: +${additionalUsers} users, +${storageGB}GB storage, trial: ${isTrial}`);
+    logger.info('Updating tenant limits', { 
+      tenantId, 
+      additionalUsers, 
+      storageGB, 
+      isTrial 
+    });
     
     // Get current limits first
     const currentLimitsResult = await pool.query(
@@ -1962,7 +2051,12 @@ async function updateTenantLimits(tenantId, additionalUsers, storageGB, isTrial)
       currentUsers = current.max_users || 0;
       currentStorageGB = current.max_storage_gb || 10;
       currentFiles = current.max_files || 1000;
-      console.log(`📊 Current limits: ${currentUsers} users, ${currentStorageGB}GB storage, ${currentFiles} files`);
+      logger.debug('Current tenant limits', { 
+        currentUsers, 
+        currentStorageGB, 
+        currentFiles,
+        tenantId 
+      });
     }
     
     // Calculate new limits (ADD to existing, don't replace)
@@ -1970,7 +2064,12 @@ async function updateTenantLimits(tenantId, additionalUsers, storageGB, isTrial)
     const newStorageGB = currentStorageGB + storageGB;
     const newFiles = Math.max(currentFiles, 1000); // At least 1000 files for paid users
     
-    console.log(`📊 New limits will be: ${newUsers} users (+${additionalUsers}), ${newStorageGB}GB storage (+${storageGB}), ${newFiles} files`);
+    logger.info('Calculating new tenant limits', { 
+      newUsers: `${newUsers} (+${additionalUsers})`, 
+      newStorageGB: `${newStorageGB}GB (+${storageGB})`, 
+      newFiles,
+      tenantId 
+    });
     
     if (additionalUsers > 0) {
       await pool.query(
@@ -1985,12 +2084,12 @@ async function updateTenantLimits(tenantId, additionalUsers, storageGB, isTrial)
            updated_at = NOW()`,
         [tenantId, newUsers, newStorageGB, newFiles, isTrial]
       );
-      console.log(`✅ Tenant limits updated successfully`);
+      logger.info('Tenant limits updated successfully', { tenantId });
     }
     
     if (isTrial) {
       // Add back to trial_tenants table if reverting to trial
-      console.log(`🔄 Adding tenant ${tenantId} back to trial_tenants table`);
+      logger.debug('Adding tenant back to trial_tenants table', { tenantId });
       await pool.query(
         `INSERT INTO trial_tenants (tenant_id, trial_start_date, trial_end_date, is_active)
          VALUES ($1, NOW(), NOW() + INTERVAL '30 days', TRUE)
@@ -2001,25 +2100,33 @@ async function updateTenantLimits(tenantId, additionalUsers, storageGB, isTrial)
            is_active = TRUE`,
         [tenantId]
       );
-      console.log(`✅ Tenant ${tenantId} added to trial_tenants table`);
+      logger.info('Tenant added to trial_tenants table', { tenantId });
     } else {
       // Remove from trial_tenants table if converting to paid
-      console.log(`🔄 Removing tenant ${tenantId} from trial_tenants table`);
+      logger.debug('Removing tenant from trial_tenants table', { tenantId });
       await pool.query(
         'DELETE FROM trial_tenants WHERE tenant_id = $1',
         [tenantId]
       );
-      console.log(`✅ Tenant ${tenantId} removed from trial_tenants table`);
+      logger.info('Tenant removed from trial_tenants table', { tenantId });
     }
   } catch (error) {
-    console.error('❌ Error updating tenant limits:', error);
+    logger.error('Error updating tenant limits', { error: error.message, stack: error.stack, tenantId });
     throw error;
   }
 }
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Server error:', err);
+  logger.error('Server error', { 
+    error: err.message, 
+    stack: err.stack,
+    type: err.type,
+    path: req.path,
+    method: req.method,
+    userId: req.user?.id,
+    tenantId: req.user?.tenant_id
+  });
   
   if (err.type === 'entity.too.large') {
     return res.status(413).json({ 
@@ -2043,7 +2150,9 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔐 Auth endpoints: http://localhost:${PORT}/auth`);
+  logger.info('Server started successfully', { 
+    port: PORT,
+    healthCheck: `http://localhost:${PORT}/health`,
+    authEndpoints: `http://localhost:${PORT}/auth`
+  });
 }); 

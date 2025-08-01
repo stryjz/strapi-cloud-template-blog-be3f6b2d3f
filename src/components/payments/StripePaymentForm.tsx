@@ -47,6 +47,15 @@ export const StripePaymentForm: React.FC<StripePaymentFormProps> = ({
   const [paymentIntent, setPaymentIntent] = useState<any>(null);
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypal' | 'bank_transfer'>('card');
 
+  // Debug logging
+  useEffect(() => {
+    console.log('🔍 StripePaymentForm Debug Info:');
+    console.log('🔍 Stripe object:', stripe ? 'Available' : 'Not available');
+    console.log('🔍 Elements object:', elements ? 'Available' : 'Not available');
+    console.log('🔍 Payment method:', paymentMethod);
+    console.log('🔍 Stripe publishable key:', import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY ? 'Set' : 'Not set');
+  }, [stripe, elements, paymentMethod]);
+
   useEffect(() => {
     // Create payment intent when component mounts
     const initializePayment = async () => {
@@ -54,6 +63,7 @@ export const StripePaymentForm: React.FC<StripePaymentFormProps> = ({
         setIsProcessing(true);
         setError(null);
         
+        console.log('🔍 Initializing payment intent...');
         const intent = await createPaymentIntent({
           amount,
           currency: 'usd',
@@ -61,8 +71,10 @@ export const StripePaymentForm: React.FC<StripePaymentFormProps> = ({
           metadata,
         });
         
+        console.log('🔍 Payment intent created:', intent);
         setPaymentIntent(intent);
       } catch (err) {
+        console.error('🔍 Payment intent creation failed:', err);
         setError(err instanceof Error ? err.message : 'Failed to initialize payment');
         toast({
           title: "Payment Error",
@@ -270,7 +282,23 @@ export const StripePaymentForm: React.FC<StripePaymentFormProps> = ({
             <div className="space-y-2">
               <label className="text-sm font-medium">Card Information</label>
               <div className="p-3 border rounded-md">
-                <CardElement options={CARD_ELEMENT_OPTIONS} />
+                {elements ? (
+                  <CardElement 
+                    options={CARD_ELEMENT_OPTIONS} 
+                    onReady={(element) => {
+                      console.log('🔍 CardElement ready:', !!element);
+                    }}
+                    onChange={(event) => {
+                      console.log('🔍 CardElement change:', event.complete, event.error);
+                    }}
+                  />
+                ) : (
+                  <div className="p-4 bg-muted rounded-md">
+                    <p className="text-sm text-muted-foreground">
+                      Payment form is loading... Please wait.
+                    </p>
+                  </div>
+                )}
               </div>
               <p className="text-xs text-muted-foreground">
                 Please include your postal/ZIP code when prompted. Any valid postal code will work for testing.

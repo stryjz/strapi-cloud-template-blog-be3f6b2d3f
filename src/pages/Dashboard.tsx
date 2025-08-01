@@ -262,7 +262,7 @@ export const Dashboard = () => {
           <CardContent className="space-y-3">
             <div 
               className="flex items-center justify-between p-3 bg-accent rounded-lg cursor-pointer hover:bg-accent/80 transition-colors"
-              onClick={() => navigate('/upload')}
+              onClick={() => navigate('/dashboard/upload')}
             >
               <div className="flex items-center space-x-3">
                 <Upload className="h-5 w-5 text-primary" />
@@ -272,7 +272,7 @@ export const Dashboard = () => {
             </div>
             <div 
               className="flex items-center justify-between p-3 bg-accent rounded-lg cursor-pointer hover:bg-accent/80 transition-colors"
-              onClick={() => navigate('/files')}
+              onClick={() => navigate('/dashboard/files')}
             >
               <div className="flex items-center space-x-3">
                 <Files className="h-5 w-5 text-primary" />

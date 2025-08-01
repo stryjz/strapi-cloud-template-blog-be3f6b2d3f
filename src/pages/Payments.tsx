@@ -15,6 +15,7 @@ import { toast } from "@/hooks/use-toast";
 import { Elements } from '@stripe/react-stripe-js';
 import { stripePromise } from '@/lib/stripe';
 import { StripePaymentForm } from '@/components/payments/StripePaymentForm';
+import { loadStripe } from '@stripe/stripe-js';
 
 interface PaymentPlan {
   id: string;
@@ -41,6 +42,50 @@ interface Tenant {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
+// Stripe Elements Wrapper Component
+const StripeElementsWrapper = ({ children }: { children: React.ReactNode }) => {
+  const [stripe, setStripe] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const initializeStripe = async () => {
+      try {
+        console.log('🔍 Initializing Stripe...');
+        const stripeInstance = await stripePromise;
+        console.log('🔍 Stripe instance loaded:', !!stripeInstance);
+        setStripe(stripeInstance);
+      } catch (error) {
+        console.error('🔍 Failed to load Stripe:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeStripe();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-6">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+          <p className="text-sm text-muted-foreground">Loading payment form...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!stripe) {
+    return (
+      <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md">
+        <p className="text-destructive">Failed to load payment system. Please refresh the page.</p>
+      </div>
+    );
+  }
+
+  return <Elements stripe={stripe}>{children}</Elements>;
+};
 
 // Get stored session token
 const getSessionToken = () => {
@@ -87,6 +132,13 @@ export const Payments = () => {
     paymentMethod: "credit_card"
   });
   const [showStripePayment, setShowStripePayment] = useState(false);
+
+  // Debug: Check Stripe configuration on component mount
+  useEffect(() => {
+    console.log('🔍 Payments Component Debug:');
+    console.log('🔍 VITE_STRIPE_PUBLISHABLE_KEY:', import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY ? 'SET' : 'NOT SET');
+    console.log('🔍 Key starts with:', import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY?.substring(0, 7) || 'N/A');
+  }, []);
 
   // Predefined payment plans
   const paymentPlans: PaymentPlan[] = [
@@ -643,28 +695,33 @@ export const Payments = () => {
             <DialogTitle>Complete Payment</DialogTitle>
           </DialogHeader>
           {selectedTenant && (
-            <Elements stripe={stripePromise}>
-              <StripePaymentForm
-                amount={purchaseForm.purchaseType === "users" 
-                  ? purchaseForm.additionalUsers * 10 
-                  : purchaseForm.storageGB === 10 ? 10 : 50
-                }
-                description={purchaseForm.purchaseType === "users"
-                  ? `${purchaseForm.additionalUsers} additional user license(s) for ${selectedTenant.name}`
-                  : `${purchaseForm.storageGB}GB additional storage for ${selectedTenant.name}`
-                }
-                metadata={{
-                  tenant_id: selectedTenant.id,
-                  tenant_name: selectedTenant.name,
-                  user_email: session?.user?.email || '',
-                  purchase_type: purchaseForm.purchaseType,
-                  additional_users: purchaseForm.purchaseType === "users" ? purchaseForm.additionalUsers.toString() : "0",
-                  storage_gb: purchaseForm.purchaseType === "storage" ? purchaseForm.storageGB.toString() : "0",
-                }}
-                onSuccess={handlePaymentSuccess}
-                onCancel={handlePaymentCancel}
-              />
-            </Elements>
+            <StripeElementsWrapper>
+              {(() => {
+                console.log('🔍 Elements provider initialized');
+                return (
+                  <StripePaymentForm
+                    amount={purchaseForm.purchaseType === "users" 
+                      ? purchaseForm.additionalUsers * 10 
+                      : purchaseForm.storageGB === 10 ? 10 : 50
+                    }
+                    description={purchaseForm.purchaseType === "users"
+                      ? `${purchaseForm.additionalUsers} additional user license(s) for ${selectedTenant.name}`
+                      : `${purchaseForm.storageGB}GB additional storage for ${selectedTenant.name}`
+                    }
+                    metadata={{
+                      tenant_id: selectedTenant.id,
+                      tenant_name: selectedTenant.name,
+                      user_email: session?.user?.email || '',
+                      purchase_type: purchaseForm.purchaseType,
+                      additional_users: purchaseForm.purchaseType === "users" ? purchaseForm.additionalUsers.toString() : "0",
+                      storage_gb: purchaseForm.purchaseType === "storage" ? purchaseForm.storageGB.toString() : "0",
+                    }}
+                    onSuccess={handlePaymentSuccess}
+                    onCancel={handlePaymentCancel}
+                  />
+                );
+              })()}
+            </StripeElementsWrapper>
           )}
         </DialogContent>
       </Dialog>

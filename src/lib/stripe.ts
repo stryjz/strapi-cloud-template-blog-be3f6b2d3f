@@ -1,7 +1,13 @@
 import { loadStripe } from '@stripe/stripe-js';
 
+// Debug: Check if the publishable key is available
+const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+console.log('🔍 Stripe Configuration Debug:');
+console.log('🔍 Publishable key available:', !!publishableKey);
+console.log('🔍 Publishable key starts with:', publishableKey ? publishableKey.substring(0, 7) : 'Not set');
+
 // Initialize Stripe with your publishable key
-export const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
+export const stripePromise = loadStripe(publishableKey);
 
 // Payment types
 export interface PaymentIntent {
